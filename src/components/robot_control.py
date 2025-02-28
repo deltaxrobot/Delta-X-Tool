@@ -9,13 +9,14 @@ class RobotControl(QWidget):
     position_updated = pyqtSignal(dict)  # Signal to emit when position is updated
     connection_status_changed = pyqtSignal(bool)  # Signal to emit when connection status changes
     log_message = pyqtSignal(str)  # Signal to emit log messages
+    response_received = pyqtSignal(str, object)  # Signal for device responses (response, device)
 
     def __init__(self):
         super().__init__()
         self.serial_port = QSerialPort()
         self.serial_port.readyRead.connect(self.read_data)
         self.buffer = ""
-        self.last_command = ""
+        self.last_command = None
         
         # Auto-connect timers
         self.auto_connect_timer = QTimer()
@@ -377,26 +378,21 @@ class RobotControl(QWidget):
             self.log_message.emit("Error: Not connected to robot")
 
     def read_data(self):
+        """Read data from serial port"""
         while self.serial_port.canReadLine():
             data = self.serial_port.readLine().data().decode().strip()
             self.log_message.emit(f"Received: {data}")
+            self.response_received.emit(data, self)  # Emit response with self as device
             
-            # Check for Delta robot response
-            if data == "YesDelta" and self.auto_connect_cb.isChecked():
-                self.port_response_timer.stop()  # Stop timeout timer
-                self.port_combo.setCurrentText(self.current_test_port)
-                self.connect_btn.setText("Disconnect")
-                self.port_combo.setEnabled(False)
-                self.refresh_btn.setEnabled(False)
-                self.connection_status_changed.emit(True)
-                self.log_message.emit(f"Delta robot found and connected on {self.current_test_port}")
-                self.send_gcode("G93")  # Get current position
-                return
+            # Handle special responses
+            if data == "YesDelta" and self.last_command == "IsDelta":
+                self.log_message.emit("Robot detected!")
+                self.connection_group.setEnabled(False)
+                self.control_tabs.setEnabled(True)
+            elif data == "ok" and self.last_command == "G28":
+                # After homing, request current position
+                self.send_gcode("G93")
             
-            # Check for "ok" after homing
-            if data.lower() == "ok" and self.last_command == "G28":
-                self.send_gcode("G93")  # Get position after successful homing
-                
             # Parse position data
             if ',' in data and len(data.split(',')) >= 3:
                 try:

@@ -1,6 +1,11 @@
 import sys
+import os
+
+# Add src directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QTextEdit, QTabWidget)
+                           QHBoxLayout, QTabWidget, QSplitter)
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtCore import Qt
 from components.robot_control import RobotControl
@@ -81,20 +86,34 @@ class DeltaXTool(QMainWindow):
         """)
 
     def init_ui(self):
+        # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        layout = QHBoxLayout(central_widget)
+
+        # Create main horizontal splitter
+        main_splitter = QSplitter(Qt.Horizontal)
         
-        # Create device manager
+        # Left and Center - Device Manager
         self.device_manager = DeviceManager()
-        self.device_manager.log_message.connect(self.log_message)
-        layout.addWidget(self.device_manager)
+        main_splitter.addWidget(self.device_manager)
         
-        # Add log text area
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
-        layout.addWidget(self.log_text)
+        # Right side - Plugin Tabs
+        self.plugin_tabs = QTabWidget()
+        main_splitter.addWidget(self.plugin_tabs)
+        
+        # Set initial splitter sizes (80% left+center, 20% right)
+        main_splitter.setSizes([800, 200])
+        
+        layout.addWidget(main_splitter)
+        
+        # Add plugins to the right panel
+        self.setup_plugins()
+
+    def setup_plugins(self):
+        """Add all plugins from device manager to the right panel"""
+        for plugin in self.device_manager.get_plugins():
+            self.plugin_tabs.addTab(plugin, plugin.name)
 
     def log_message(self, message):
         self.log_text.append(message)
@@ -102,8 +121,15 @@ class DeltaXTool(QMainWindow):
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-if __name__ == '__main__':
+def main():
     app = QApplication(sys.argv)
+    
+    # Apply modern style
+    app.setStyle('Fusion')
+    
     window = DeltaXTool()
     window.show()
-    sys.exit(app.exec_()) 
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main() 

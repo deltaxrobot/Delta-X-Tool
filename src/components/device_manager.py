@@ -1,8 +1,14 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                           QLabel, QGroupBox, QTreeWidget, QTreeWidgetItem,
-                           QStackedWidget, QFrame, QMenu)
-from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QIcon, QCursor
+                           QLabel, QComboBox, QListWidget, QMenu, QMessageBox,
+                           QStackedWidget, QTabWidget, QListWidgetItem, QSplitter)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtSerialPort import QSerialPortInfo
+import sys
+import os
+
+# Add parent directory to Python path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from plugins.script_plugin import ScriptPlugin
 
 from .robot_control import RobotControl
 from .conveyor_control import ConveyorControl
@@ -13,136 +19,151 @@ class DeviceManager(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.devices = {
-            'robots': [],
-            'conveyors': [],
-            'encoders': []
-        }
+        self.devices = []  # List of all devices
+        self.plugins = {}  # Dictionary of loaded plugins
         self.init_ui()
+        self.load_plugins()
 
     def init_ui(self):
+        # Main layout
         layout = QHBoxLayout(self)
         
-        # Left side - Device Tree
-        left_panel = QVBoxLayout()
+        # Left panel - Device List
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
         
-        # Add device buttons
-        add_group = QGroupBox("Add Device")
-        add_layout = QHBoxLayout()
+        # Add device button
+        add_btn = QPushButton("Add Device")
+        add_btn.clicked.connect(self.show_add_menu)
+        left_layout.addWidget(add_btn)
         
-        add_robot_btn = QPushButton("Robot")
-        add_robot_btn.clicked.connect(lambda: self.add_device('robot'))
-        add_layout.addWidget(add_robot_btn)
+        # Device list
+        self.device_list = QListWidget()
+        self.device_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.device_list.customContextMenuRequested.connect(self.show_context_menu)
+        self.device_list.currentItemChanged.connect(self.device_selected)
+        left_layout.addWidget(self.device_list)
         
-        add_conveyor_btn = QPushButton("Conveyor")
-        add_conveyor_btn.clicked.connect(lambda: self.add_device('conveyor'))
-        add_layout.addWidget(add_conveyor_btn)
+        # Set fixed width for left panel
+        left_panel.setFixedWidth(200)
+        layout.addWidget(left_panel)
         
-        add_encoder_btn = QPushButton("Encoder")
-        add_encoder_btn.clicked.connect(lambda: self.add_device('encoder'))
-        add_layout.addWidget(add_encoder_btn)
-        
-        add_group.setLayout(add_layout)
-        left_panel.addWidget(add_group)
-        
-        # Device tree
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("Devices")
-        self.tree.setMinimumWidth(200)
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self.show_context_menu)
-        self.tree.itemClicked.connect(self.device_selected)
-        
-        # Create root items
-        self.robot_root = QTreeWidgetItem(self.tree, ["Robots"])
-        self.conveyor_root = QTreeWidgetItem(self.tree, ["Conveyors"])
-        self.encoder_root = QTreeWidgetItem(self.tree, ["Encoders"])
-        
-        left_panel.addWidget(self.tree)
-        
-        # Add left panel to main layout
-        left_widget = QWidget()
-        left_widget.setLayout(left_panel)
-        left_widget.setMaximumWidth(300)
-        layout.addWidget(left_widget)
-        
-        # Right side - Device Control
+        # Device control area
         self.stack = QStackedWidget()
         self.stack.addWidget(QWidget())  # Empty widget for initial state
         layout.addWidget(self.stack)
         
         # Set stretch factors
-        layout.setStretch(0, 1)  # Left panel
-        layout.setStretch(1, 4)  # Right panel
+        layout.setStretch(0, 0)  # Device list - fixed width
+        layout.setStretch(1, 1)  # Device control - stretches to fill space
+
+    def load_plugins(self):
+        """Load all available plugins"""
+        # For now, we'll just load the Script plugin
+        script_plugin = ScriptPlugin(self)
+        self.add_plugin(script_plugin)
+        
+        # Connect plugin signals
+        for plugin in self.plugins.values():
+            plugin.command_sent.connect(self.handle_plugin_command)
+            plugin.log_message.connect(self.log_message.emit)
+
+    def add_plugin(self, plugin):
+        """Add a plugin to the system"""
+        self.plugins[plugin.name] = plugin
+        # Note: We don't add the plugin to our UI anymore, 
+        # it will be added to the main window's plugin panel
+        plugin.initialize()
+
+    def get_plugins(self):
+        """Return all loaded plugins"""
+        return self.plugins.values()
+
+    def handle_plugin_command(self, command, device):
+        """Handle command from plugin to device"""
+        if hasattr(device, 'send_command'):
+            device.send_command(command)
+        
+    def show_add_menu(self):
+        menu = QMenu(self)
+        robot_action = menu.addAction("Robot")
+        conveyor_action = menu.addAction("Conveyor")
+        encoder_action = menu.addAction("Encoder")
+        
+        # Show menu at button position
+        action = menu.exec_(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
+        
+        if action == robot_action:
+            self.add_device('robot')
+        elif action == conveyor_action:
+            self.add_device('conveyor')
+        elif action == encoder_action:
+            self.add_device('encoder')
 
     def add_device(self, device_type):
+        # Create device
         if device_type == 'robot':
             device = RobotControl()
-            parent = self.robot_root
-            name = f"Robot {len(self.devices['robots']) + 1}"
-            self.devices['robots'].append(device)
+            name = f"Robot {sum(1 for d in self.devices if isinstance(d, RobotControl)) + 1}"
         elif device_type == 'conveyor':
             device = ConveyorControl()
-            parent = self.conveyor_root
-            name = f"Conveyor {len(self.devices['conveyors']) + 1}"
-            self.devices['conveyors'].append(device)
+            name = f"Conveyor {sum(1 for d in self.devices if isinstance(d, ConveyorControl)) + 1}"
         else:  # encoder
             device = EncoderControl()
-            parent = self.encoder_root
-            name = f"Encoder {len(self.devices['encoders']) + 1}"
-            self.devices['encoders'].append(device)
+            name = f"Encoder {sum(1 for d in self.devices if isinstance(d, EncoderControl)) + 1}"
         
-        # Connect log signal
+        # Connect device signals
         device.log_message.connect(self.log_message.emit)
+        device.response_received.connect(self.handle_device_response)
         
-        # Add to tree
-        item = QTreeWidgetItem(parent, [name])
+        # Add to devices list
+        self.devices.append(device)
+        
+        # Add to list widget
+        item = QListWidgetItem(name)
         item.device = device
-        parent.setExpanded(True)
+        self.device_list.addItem(item)
         
         # Add to stack
         self.stack.addWidget(device)
+        
+        # Select the new device
+        self.device_list.setCurrentItem(item)
 
-    def device_selected(self, item):
-        if hasattr(item, 'device'):
-            # Find the index of the device widget in the stack
-            index = self.stack.indexOf(item.device)
+    def handle_device_response(self, response, device):
+        """Handle response from device and forward to plugins"""
+        for plugin in self.plugins.values():
+            plugin.handle_response(response, device)
+
+    def device_selected(self, current, previous):
+        if current and hasattr(current, 'device'):
+            index = self.stack.indexOf(current.device)
             if index != -1:
                 self.stack.setCurrentIndex(index)
 
     def show_context_menu(self, position):
-        item = self.tree.itemAt(position)
-        if item and hasattr(item, 'device'):
+        item = self.device_list.itemAt(position)
+        if item:
             menu = QMenu()
             remove_action = menu.addAction("Remove")
             rename_action = menu.addAction("Rename")
             
-            action = menu.exec_(self.tree.viewport().mapToGlobal(position))
+            action = menu.exec_(self.device_list.viewport().mapToGlobal(position))
             
             if action == remove_action:
                 self.remove_device(item)
             elif action == rename_action:
-                self.tree.editItem(item)
+                self.device_list.editItem(item)
 
     def remove_device(self, item):
-        device = item.device
-        device_type = None
-        
-        # Find device type
-        if device in self.devices['robots']:
-            device_type = 'robots'
-        elif device in self.devices['conveyors']:
-            device_type = 'conveyors'
-        elif device in self.devices['encoders']:
-            device_type = 'encoders'
-        
-        if device_type:
+        if item and hasattr(item, 'device'):
+            device = item.device
             # Remove from devices list
-            self.devices[device_type].remove(device)
+            self.devices.remove(device)
             # Remove from stack
             self.stack.removeWidget(device)
-            # Remove from tree
-            item.parent().removeChild(item)
+            # Remove from list
+            self.device_list.takeItem(self.device_list.row(item))
             # Delete the device
             device.deleteLater()
             

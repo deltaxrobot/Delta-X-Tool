@@ -7,6 +7,7 @@ from PyQt5.QtSerialPort import QSerialPort, QSerialPortInfo
 
 class EncoderControl(QWidget):
     log_message = pyqtSignal(str)  # Signal to emit log messages
+    response_received = pyqtSignal(str, object)  # Signal for device responses (response, device)
 
     def __init__(self):
         super().__init__()
@@ -266,6 +267,7 @@ class EncoderControl(QWidget):
         while self.serial_port.canReadLine():
             data = self.serial_port.readLine().data().decode().strip()
             self.log_message.emit(f"Received: {data}")
+            self.response_received.emit(data, self)  # Emit response with self as device
             
             if data == "YesXEncoder":
                 self.connect_btn.setText("Disconnect")
