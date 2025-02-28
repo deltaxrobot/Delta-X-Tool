@@ -387,8 +387,16 @@ class RobotControl(QWidget):
             # Handle special responses
             if data == "YesDelta" and self.last_command == "IsDelta":
                 self.log_message.emit("Robot detected!")
-                self.connection_group.setEnabled(False)
-                self.control_tabs.setEnabled(True)
+                # Stop auto-connect process since we found the robot
+                self.port_response_timer.stop()
+                self.auto_connect_timer.stop()
+                # Update UI
+                self.connect_btn.setText("Disconnect")
+                self.port_combo.setEnabled(False)
+                self.refresh_btn.setEnabled(False)
+                self.connection_status_changed.emit(True)
+                # Get current position
+                self.send_gcode("G93")
             elif data == "ok" and self.last_command == "G28":
                 # After homing, request current position
                 self.send_gcode("G93")
@@ -468,9 +476,21 @@ class RobotControl(QWidget):
             self.command_input.clear()
 
     def toggle_auto_connect(self, state):
-        if not state and self.serial_port.isOpen():
-            # If turning off auto-connect while connected, disconnect
-            self.toggle_connection()
+        if state:
+            # Start auto-connect if not already connected
+            if not self.serial_port.isOpen():
+                self.start_auto_connect()
+                self.connect_btn.setText("Searching...")
+                self.port_combo.setEnabled(False)
+                self.refresh_btn.setEnabled(False)
+        else:
+            # Stop auto-connect process
+            self.stop_auto_connect()
+            # If connected, stay connected
+            if self.serial_port.isOpen():
+                self.connect_btn.setText("Disconnect")
+                self.port_combo.setEnabled(False)
+                self.refresh_btn.setEnabled(False)
 
     def try_auto_connect(self):
         """Periodic check for auto-connect status"""
@@ -481,6 +501,8 @@ class RobotControl(QWidget):
         """Start the auto-connect process"""
         self.ports_to_test = [port.portName() for port in QSerialPortInfo.availablePorts()]
         if self.ports_to_test:
+            # Start the auto-connect timer
+            self.auto_connect_timer.start(2000)  # Check every 2 seconds
             self.try_next_port()
         else:
             self.log_message.emit("No COM ports available")
@@ -490,23 +512,18 @@ class RobotControl(QWidget):
         """Try connecting to the next available port"""
         if self.ports_to_test:
             self.current_test_port = self.ports_to_test.pop(0)
-            self.try_connect_to_port(self.current_test_port)
-            # Start response timeout timer
-            self.port_response_timer.start(500)  # 500ms timeout
+            if self.try_connect_to_port(self.current_test_port):
+                # Send IsDelta command to check if this is a robot
+                self.send_gcode("IsDelta")
+                # Start response timeout timer
+                self.port_response_timer.start(1000)  # 1 second timeout
+            else:
+                # If connection failed, try next port immediately
+                self.try_next_port()
         else:
-            self.port_response_timer.stop()
-            self.auto_connect_cb.setChecked(False)
-            self.connect_btn.setText("Connect")
-            self.port_combo.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
+            # No more ports to test
+            self.stop_auto_connect()
             self.log_message.emit("Auto-connect: No Delta robot found")
-
-    def port_timeout(self):
-        """Called when no response is received from current port within timeout period"""
-        if self.serial_port.isOpen():
-            self.serial_port.close()
-        self.log_message.emit(f"No response from {self.current_test_port}")
-        self.try_next_port()  # Try next port immediately
 
     def try_connect_to_port(self, port_name):
         """Attempt to connect to a specific port"""
@@ -518,10 +535,28 @@ class RobotControl(QWidget):
         
         if self.serial_port.open(QSerialPort.ReadWrite):
             self.log_message.emit(f"Testing port {port_name}...")
-            self.send_gcode("IsDelta")
+            return True
         else:
             self.log_message.emit(f"Failed to open port {port_name}")
-            self.try_next_port()  # Try next port if can't open current one
+            return False
+
+    def port_timeout(self):
+        """Called when no response is received from current port within timeout period"""
+        if self.serial_port.isOpen():
+            self.serial_port.close()
+        self.log_message.emit(f"No response from {self.current_test_port}")
+        self.try_next_port()  # Try next port immediately
+
+    def stop_auto_connect(self):
+        """Stop all auto-connect related timers"""
+        self.auto_connect_timer.stop()
+        self.port_response_timer.stop()
+        if not self.serial_port.isOpen():
+            self.auto_connect_cb.setChecked(False)
+            self.connect_btn.setText("Connect")
+            self.port_combo.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
+        self.log_message.emit("Auto-connect stopped")
 
     def send_arc_command_cw(self):
         """Send G2 (clockwise arc) command"""
@@ -559,9 +594,12 @@ class RobotControl(QWidget):
         self.send_gcode("G93")  # Get current position
 
     def stop_auto_connect(self):
-        """Stop all auto-connect related timers and close port"""
+        """Stop all auto-connect related timers"""
         self.auto_connect_timer.stop()
         self.port_response_timer.stop()
-        if self.serial_port.isOpen():
-            self.serial_port.close()
+        if not self.serial_port.isOpen():
+            self.auto_connect_cb.setChecked(False)
+            self.connect_btn.setText("Connect")
+            self.port_combo.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
         self.log_message.emit("Auto-connect stopped") 

@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                            QLabel, QComboBox, QListWidget, QMenu, QMessageBox,
-                           QStackedWidget, QTabWidget, QListWidgetItem, QSplitter)
+                           QStackedWidget, QTabWidget, QListWidgetItem, QSplitter,
+                           QTextEdit)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtSerialPort import QSerialPortInfo
 import sys
@@ -48,14 +49,37 @@ class DeviceManager(QWidget):
         left_panel.setFixedWidth(200)
         layout.addWidget(left_panel)
         
+        # Right panel with splitter
+        right_panel = QSplitter(Qt.Vertical)
+        
         # Device control area
         self.stack = QStackedWidget()
         self.stack.addWidget(QWidget())  # Empty widget for initial state
-        layout.addWidget(self.stack)
+        right_panel.addWidget(self.stack)
+        
+        # Log display area
+        log_widget = QWidget()
+        log_layout = QVBoxLayout(log_widget)
+        
+        log_label = QLabel("Communication Log")
+        log_layout.addWidget(log_label)
+        
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        self.log_display.setMaximumHeight(150)
+        log_layout.addWidget(self.log_display)
+        
+        right_panel.addWidget(log_widget)
+        
+        # Add right panel to main layout
+        layout.addWidget(right_panel)
         
         # Set stretch factors
         layout.setStretch(0, 0)  # Device list - fixed width
-        layout.setStretch(1, 1)  # Device control - stretches to fill space
+        layout.setStretch(1, 1)  # Right panel - stretches to fill space
+        
+        # Connect log signal
+        self.log_message.connect(self.log_display.append)
 
     def load_plugins(self):
         """Load all available plugins"""
@@ -132,6 +156,17 @@ class DeviceManager(QWidget):
 
     def handle_device_response(self, response, device):
         """Handle response from device and forward to plugins"""
+        # Display response in log
+        device_name = "Unknown Device"
+        for i in range(self.device_list.count()):
+            item = self.device_list.item(i)
+            if item.device == device:
+                device_name = item.text()
+                break
+        
+        self.log_message.emit(f"{device_name}: {response}")
+        
+        # Forward response to plugins
         for plugin in self.plugins.values():
             plugin.handle_response(response, device)
 
