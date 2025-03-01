@@ -152,7 +152,7 @@ def main():
     
     window = DeltaXTool()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec_()) 
 
 if __name__ == '__main__':
     main() 
