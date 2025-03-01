@@ -605,13 +605,26 @@ class RobotControl(QWidget):
         self.send_gcode("G90")  # Return to absolute mode
         self.send_gcode("G93")  # Get current position
 
-    def stop_auto_connect(self):
-        """Stop all auto-connect related timers"""
-        self.auto_connect_timer.stop()
-        self.port_response_timer.stop()
-        if not self.serial_port.isOpen():
-            self.auto_connect_cb.setChecked(False)
-            self.connect_btn.setText("Connect")
-            self.port_combo.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
-        self.log_message.emit("Auto-connect stopped") 
+    # Robot control methods for Lua scripting
+    def home(self):
+        """Home all axes of the robot"""
+        return self.home_robot()
+        
+    def move_to(self, x, y, z):
+        """Move robot to absolute position"""
+        self.set_absolute_mode()
+        return self.send_gcode(f"G1 X{x} Y{y} Z{z}")
+        
+    def set_speed(self, speed):
+        """Set robot movement speed (mm/min)"""
+        return self.send_gcode(f"G0 F{speed}")
+        
+    def set_output(self, pin, state):
+        """Set digital output pin state"""
+        if state:
+            return self.digital_output_on()
+        return self.digital_output_off()
+        
+    def set_pwm(self, pin, value):
+        """Set PWM output value (0-255)"""
+        return self.set_pwm_output() 
