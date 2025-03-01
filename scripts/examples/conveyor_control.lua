@@ -21,7 +21,7 @@ wait_response()
 -- Initialize robot
 print("Initializing robot...")
 home_robot(robot)
-move_to(robot, 0, 0, 50)  -- Move to safe position
+move_to(robot, 0, 0, -850)  -- Move to safe position
 
 -- Main process loop
 print("Starting main process...")
@@ -34,9 +34,9 @@ for i = 1, 5 do
     
     -- Robot pick sequence
     print("Executing pick sequence...")
-    move_to(robot, 100, 0, 50)   -- Move above pickup
-    move_to(robot, 100, 0, 0)    -- Move down
-    move_to(robot, 100, 0, 50)   -- Move up with part
+    move_to(robot, 100, 0, -850)   -- Move above pickup
+    move_to(robot, 100, 0, -850)    -- Move down
+    move_to(robot, 100, 0, -850)   -- Move up with part
     
     -- Move conveyor to place position
     print("Moving conveyor to place position...")
@@ -44,9 +44,9 @@ for i = 1, 5 do
     
     -- Robot place sequence
     print("Executing place sequence...")
-    move_to(robot, 0, 100, 50)   -- Move above place
-    move_to(robot, 0, 100, 0)    -- Move down
-    move_to(robot, 0, 100, 50)   -- Move up
+    move_to(robot, 0, 100, -850)   -- Move above place
+    move_to(robot, 0, 100, -80)    -- Move down
+    move_to(robot, 0, 100, -850)   -- Move up
     
     print("Cycle", i, "completed")
 end

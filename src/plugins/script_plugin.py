@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                            QTextEdit, QSplitter, QLabel, QFileDialog,
                            QListWidget, QMessageBox, QCompleter, QPlainTextEdit,
                            QSizePolicy, QDialog, QTabWidget)
-from PyQt5.QtCore import Qt, QTimer, QRect, QSize
+from PyQt5.QtCore import Qt, QTimer, QRect, QSize, pyqtSignal
 from PyQt5.QtGui import (QTextCharFormat, QSyntaxHighlighter, QColor, QFont, 
                         QTextCursor, QPainter, QTextFormat)
 import lupa
@@ -10,13 +10,26 @@ from lupa import LuaRuntime
 import os
 import re
 import time
+import threading
 from datetime import datetime
 import math
+import traceback
+import sys
+
+# Add parent directory to Python path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from components.robot_control import RobotControl
 from components.conveyor_control import ConveyorControl
 from components.encoder_control import EncoderControl
 
 from .base_plugin import BasePlugin
+
+# Constants
+MAX_SCRIPT_RUNTIME = 30000  # 30 seconds
+SCRIPT_CHECK_INTERVAL = 100  # 100ms
+MAX_QUEUE_SIZE = 1000
+SCRIPT_STOP_TIMEOUT = 5  # 5 seconds
 
 class LuaSyntaxHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -482,6 +495,9 @@ end
         layout.addLayout(btn_layout)
 
 class ScriptPlugin(BasePlugin):
+    # Signal for logging messages
+    log_message = pyqtSignal(str)
+    
     def __init__(self, device_manager):
         super().__init__(device_manager)
         self.name = "Script"
@@ -489,11 +505,38 @@ class ScriptPlugin(BasePlugin):
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.current_device = None
         self.command_queue = []
+        self.queue_lock = threading.Lock()
         self.waiting_response = False
         self.scripts_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'scripts')
+        
+        # Script execution control
+        self.script_running = False
+        self.stop_requested = False
+        self.script_timeout = None
+        self.lua_thread = None
+        
+        # Initialize UI and setup environment
         self.init_ui()
         self.setup_lua_env()
         self.load_script_list()
+        
+        # Connect signals
+        self.log_message.connect(self.output_console.append)
+        
+    def handle_script_timeout(self):
+        """Handle script timeout"""
+        if self.script_running:
+            self.log_message.emit("Script execution timeout")
+            self.stop_script()
+            
+    def check_queue_size(self):
+        """Check if command queue is not too large"""
+        with self.queue_lock:
+            if len(self.command_queue) >= MAX_QUEUE_SIZE:
+                self.log_message.emit("Command queue overflow")
+                self.stop_script()
+                return False
+        return True
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -781,154 +824,343 @@ print("Script started...")
             QMessageBox.warning(self, "Error", f"Error saving script: {str(e)}")
 
     def setup_lua_env(self):
-        # Add global functions to Lua environment
-        lua_globals = self.lua.globals()
-        
-        # Basic device functions
-        def get_device(name):
-            for i in range(self.device_manager.device_list.count()):
-                item = self.device_manager.device_list.item(i)
-                if item.text() == name:
-                    return item.device
-            return None
-        lua_globals.get_device = get_device
-        
-        # Conveyor specific functions
-        def conveyor_move(conveyor, direction, speed):
-            if isinstance(conveyor, ConveyorControl):
-                if direction == "forward":
-                    conveyor.move_forward(speed)
-                elif direction == "backward":
-                    conveyor.move_backward(speed)
-                return True
-            return False
-        lua_globals.conveyor_move = conveyor_move
-        
-        def conveyor_stop(conveyor):
-            if isinstance(conveyor, ConveyorControl):
-                conveyor.stop()
-                return True
-            return False
-        lua_globals.conveyor_stop = conveyor_stop
-        
-        def conveyor_step(conveyor, steps, speed):
-            if isinstance(conveyor, ConveyorControl):
-                conveyor.move_steps(steps, speed)
-                return True
-            return False
-        lua_globals.conveyor_step = conveyor_step
-        
-        # Encoder specific functions
-        def get_encoder_position(encoder):
-            if isinstance(encoder, EncoderControl):
-                return encoder.get_position()
-            return None
-        lua_globals.get_encoder_position = get_encoder_position
-        
-        def reset_encoder(encoder):
-            if isinstance(encoder, EncoderControl):
-                encoder.reset_position()
-                return True
-            return False
-        lua_globals.reset_encoder = reset_encoder
-        
-        def set_encoder_mode(encoder, mode):
-            if isinstance(encoder, EncoderControl):
-                encoder.set_mode(mode)
-                return True
-            return False
-        lua_globals.set_encoder_mode = set_encoder_mode
-        
-        # Math and utility functions
-        lua_globals.math = {
-            'pi': math.pi,
-            'sin': math.sin,
-            'cos': math.cos,
-            'tan': math.tan,
-            'abs': math.fabs,
-            'floor': math.floor,
-            'ceil': math.ceil,
-            'rad': math.radians,
-            'deg': math.degrees,
-            'sqrt': math.sqrt,
-            'min': min,
-            'max': max
-        }
-        
-        # Time functions
-        def sleep(seconds):
-            time.sleep(seconds)
-        lua_globals.sleep = sleep
-        
-        def get_time():
-            return time.time()
-        lua_globals.get_time = get_time
-        
-        # Data processing functions
-        def average(values):
-            if not values:
-                return 0
-            return sum(values) / len(values)
-        lua_globals.average = average
-        
-        def median(values):
-            if not values:
-                return 0
-            sorted_values = sorted(values)
-            mid = len(sorted_values) // 2
-            if len(sorted_values) % 2 == 0:
-                return (sorted_values[mid-1] + sorted_values[mid]) / 2
-            return sorted_values[mid]
-        lua_globals.median = median
+        """Set up the Lua environment with functions and error handling"""
+        try:
+            # Add global functions to Lua environment
+            lua_globals = self.lua.globals()
+            
+            # Add print function
+            def lua_print(*args):
+                message = " ".join(str(arg) for arg in args)
+                self.output_console.append(message)
+            lua_globals.print = lua_print
+            
+            # Basic device functions with error handling
+            def get_device(name):
+                try:
+                    if not isinstance(name, str):
+                        raise TypeError("Device name must be a string")
+                        
+                    for i in range(self.device_manager.device_list.count()):
+                        item = self.device_manager.device_list.item(i)
+                        if item.text() == name:
+                            device = item.device
+                            if device is None:
+                                raise Exception(f"Device {name} is not connected")
+                            return device
+                    raise Exception(f"Device {name} not found")
+                except Exception as e:
+                    lua_print(f"Error getting device: {str(e)}")
+                    return None
+            lua_globals.get_device = get_device
+            
+            # Conveyor specific functions with error handling
+            def conveyor_move(conveyor, direction, speed):
+                try:
+                    if not isinstance(conveyor, ConveyorControl):
+                        raise TypeError("First argument must be a conveyor device")
+                    if direction not in ["forward", "backward"]:
+                        raise ValueError("Direction must be 'forward' or 'backward'")
+                    if not isinstance(speed, (int, float)) or speed < 0 or speed > 100:
+                        raise ValueError("Speed must be between 0 and 100")
+                        
+                    if direction == "forward":
+                        conveyor.move_forward(speed)
+                    else:
+                        conveyor.move_backward(speed)
+                    return True
+                except Exception as e:
+                    lua_print(f"Error moving conveyor: {str(e)}")
+                    return False
+            lua_globals.conveyor_move = conveyor_move
+            
+            def conveyor_stop(conveyor):
+                try:
+                    if not isinstance(conveyor, ConveyorControl):
+                        raise TypeError("Argument must be a conveyor device")
+                    conveyor.stop()
+                    return True
+                except Exception as e:
+                    lua_print(f"Error stopping conveyor: {str(e)}")
+                    return False
+            lua_globals.conveyor_stop = conveyor_stop
+            
+            def conveyor_step(conveyor, steps, speed):
+                try:
+                    if not isinstance(conveyor, ConveyorControl):
+                        raise TypeError("First argument must be a conveyor device")
+                    if not isinstance(steps, (int, float)):
+                        raise TypeError("Steps must be a number")
+                    if not isinstance(speed, (int, float)) or speed < 0 or speed > 100:
+                        raise ValueError("Speed must be between 0 and 100")
+                        
+                    conveyor.move_steps(steps, speed)
+                    return True
+                except Exception as e:
+                    lua_print(f"Error stepping conveyor: {str(e)}")
+                    return False
+            lua_globals.conveyor_step = conveyor_step
+            
+            # Encoder specific functions with error handling
+            def get_encoder_position(encoder):
+                try:
+                    if not isinstance(encoder, EncoderControl):
+                        raise TypeError("Argument must be an encoder device")
+                    return encoder.get_position()
+                except Exception as e:
+                    lua_print(f"Error getting encoder position: {str(e)}")
+                    return None
+            lua_globals.get_encoder_position = get_encoder_position
+            
+            def reset_encoder(encoder):
+                try:
+                    if not isinstance(encoder, EncoderControl):
+                        raise TypeError("Argument must be an encoder device")
+                    encoder.reset_position()
+                    return True
+                except Exception as e:
+                    lua_print(f"Error resetting encoder: {str(e)}")
+                    return False
+            lua_globals.reset_encoder = reset_encoder
+            
+            def set_encoder_mode(encoder, mode):
+                try:
+                    if not isinstance(encoder, EncoderControl):
+                        raise TypeError("First argument must be an encoder device")
+                    if mode not in ["absolute", "relative"]:
+                        raise ValueError("Mode must be 'absolute' or 'relative'")
+                    encoder.set_mode(mode)
+                    return True
+                except Exception as e:
+                    lua_print(f"Error setting encoder mode: {str(e)}")
+                    return False
+            lua_globals.set_encoder_mode = set_encoder_mode
+            
+            # Math and utility functions
+            lua_globals.math = {
+                'pi': math.pi,
+                'sin': math.sin,
+                'cos': math.cos,
+                'tan': math.tan,
+                'abs': math.fabs,
+                'floor': math.floor,
+                'ceil': math.ceil,
+                'rad': math.radians,
+                'deg': math.degrees,
+                'sqrt': math.sqrt,
+                'min': min,
+                'max': max
+            }
+            
+            # Time functions with error handling
+            def sleep(seconds):
+                try:
+                    if not isinstance(seconds, (int, float)) or seconds < 0:
+                        raise ValueError("Sleep time must be a non-negative number")
+                    if self.stop_requested:
+                        return
+                    time.sleep(seconds)
+                except Exception as e:
+                    lua_print(f"Error in sleep: {str(e)}")
+            lua_globals.sleep = sleep
+            
+            def get_time():
+                try:
+                    return time.time()
+                except Exception as e:
+                    lua_print(f"Error getting time: {str(e)}")
+                    return 0
+            lua_globals.get_time = get_time
+            
+            # Data processing functions with error handling
+            def average(values):
+                try:
+                    if not isinstance(values, (list, tuple)):
+                        raise TypeError("Expected list or tuple")
+                    if not values:
+                        return 0
+                    numeric_values = [float(x) for x in values]
+                    return sum(numeric_values) / len(numeric_values)
+                except Exception as e:
+                    lua_print(f"Error calculating average: {str(e)}")
+                    return 0
+            lua_globals.average = average
+            
+            def median(values):
+                try:
+                    if not isinstance(values, (list, tuple)):
+                        raise TypeError("Expected list or tuple")
+                    if not values:
+                        return 0
+                    numeric_values = sorted([float(x) for x in values])
+                    mid = len(numeric_values) // 2
+                    if len(numeric_values) % 2 == 0:
+                        return (numeric_values[mid-1] + numeric_values[mid]) / 2
+                    return numeric_values[mid]
+                except Exception as e:
+                    lua_print(f"Error calculating median: {str(e)}")
+                    return 0
+            lua_globals.median = median
+            
+            # Add stop check function
+            def check_stop():
+                return self.stop_requested
+            lua_globals.check_stop = check_stop
+            
+        except Exception as e:
+            self.log_message.emit(f"Error setting up Lua environment: {str(e)}")
+            self.output_console.append(traceback.format_exc())
 
     def run_script(self):
-        self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.output_console.clear()
-        
+        """Run the current script"""
         try:
-            # Create coroutine for script
-            script = self.script_editor.toPlainText()
-            self.lua_thread = self.lua.eval(f"coroutine.create(function() {script} end)")
+            # Reset state
+            self.script_running = True
+            self.stop_requested = False
+            self.run_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.output_console.clear()
             
-            # Start script execution
-            success, result = self.lua.eval("coroutine.resume")(self.lua_thread)
+            # Set up timeout
+            self.script_timeout = QTimer()
+            self.script_timeout.setSingleShot(True)
+            self.script_timeout.timeout.connect(self.handle_script_timeout)
+            self.script_timeout.start(MAX_SCRIPT_RUNTIME)
+            
+            # Get script content
+            script = self.script_editor.toPlainText()
+            
+            # Create Lua function to handle script execution
+            self.lua.execute("""
+                function create_and_run_script(script_text)
+                    -- Load the script
+                    local fn, err = load(script_text)
+                    if not fn then
+                        error("Failed to load script: " .. tostring(err))
+                    end
+                    
+                    -- Create coroutine
+                    local co = coroutine.create(fn)
+                    
+                    -- Return both the coroutine and its initial run result
+                    local success, result = coroutine.resume(co)
+                    return co, success, result
+                end
+            """)
+            
+            # Run the script
+            create_and_run = self.lua.globals().create_and_run_script
+            self.lua_thread, success, result = create_and_run(script)
+            
             if not success:
-                self.log_message.emit(f"Script error: {result}")
-                self.output_console.append(f"Error: {result}")
-                self.stop_script()
+                raise Exception(str(result))
                 
         except Exception as e:
             self.log_message.emit(f"Script error: {str(e)}")
             self.output_console.append(f"Error: {str(e)}")
+            self.output_console.append(traceback.format_exc())
             self.stop_script()
 
     def stop_script(self):
-        self.command_queue.clear()
-        self.waiting_response = False
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        """Stop the current script safely"""
+        try:
+            self.stop_requested = True
+            
+            if hasattr(self, 'lua_thread'):
+                # Set stop flag in Lua environment
+                self.lua.globals().stop_requested = True
+                
+                # Create Lua function to safely stop script
+                self.lua.execute("""
+                    function safe_stop_script(co)
+                        if not co then return end
+                        
+                        local status = coroutine.status(co)
+                        if status == "suspended" then
+                            -- Try to resume one last time to allow cleanup
+                            pcall(coroutine.resume, co)
+                        end
+                    end
+                """)
+                
+                # Stop the script
+                safe_stop = self.lua.globals().safe_stop_script
+                safe_stop(self.lua_thread)
+                    
+            # Clean up
+            with self.queue_lock:
+                self.command_queue.clear()
+            self.waiting_response = False
+            self.script_running = False
+            
+            # Reset UI
+            self.run_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            
+            # Stop timeout timer
+            if self.script_timeout:
+                self.script_timeout.stop()
+                
+        except Exception as e:
+            self.log_message.emit(f"Error stopping script: {str(e)}")
+            self.output_console.append(traceback.format_exc())
 
     def process_queue(self):
-        if not self.waiting_response and self.command_queue:
-            # Send next command
-            command = self.command_queue.pop(0)
-            self.waiting_response = True
-            self.send_command(command, self.current_device)
-            self.output_console.append(f"Sent: {command}")
+        """Process commands in the queue"""
+        try:
+            if self.stop_requested:
+                return
+                
+            with self.queue_lock:
+                if not self.waiting_response and self.command_queue:
+                    # Send next command
+                    command = self.command_queue.pop(0)
+                    self.waiting_response = True
+                    self.send_command(command, self.current_device)
+                    self.output_console.append(f"Sent: {command}")
+                    
+        except Exception as e:
+            self.log_message.emit(f"Error processing queue: {str(e)}")
+            self.output_console.append(traceback.format_exc())
+            self.stop_script()
 
     def handle_response(self, response, device):
-        if device == self.current_device:
-            self.output_console.append(f"Received: {response}")
-            self.waiting_response = False
-            
-            # Resume script execution
-            if hasattr(self, 'lua_thread'):
-                success, result = self.lua.eval("coroutine.resume")(self.lua_thread)
-                if not success:
-                    self.log_message.emit(f"Script error: {result}")
-                    self.output_console.append(f"Error: {result}")
-                    self.stop_script()
+        """Handle device response"""
+        try:
+            if device == self.current_device:
+                self.output_console.append(f"Received: {response}")
+                self.waiting_response = False
+                
+                # Check if script should continue
+                if self.stop_requested:
+                    return
+                    
+                # Resume script execution
+                if hasattr(self, 'lua_thread'):
+                    # Create Lua function to safely resume script
+                    self.lua.execute("""
+                        function safe_resume_script(co)
+                            if not co then return false, "No coroutine" end
+                            
+                            local status = coroutine.status(co)
+                            if status == "suspended" then
+                                return coroutine.resume(co)
+                            end
+                            return false, "Coroutine is " .. status
+                        end
+                    """)
+                    
+                    # Resume the script
+                    safe_resume = self.lua.globals().safe_resume_script
+                    success, result = safe_resume(self.lua_thread)
+                    
+                    if not success:
+                        raise Exception(str(result))
+                            
+        except Exception as e:
+            self.log_message.emit(f"Script error: {str(e)}")
+            self.output_console.append(traceback.format_exc())
+            self.stop_script()
 
     def get_completion_words(self):
         return [
