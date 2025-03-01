@@ -169,14 +169,22 @@ class EncoderControl(QWidget):
         layout.addStretch()
 
     def update_ports(self):
+        """Update available COM ports, filtering out non-physical ports"""
         self.port_combo.clear()
         for port in QSerialPortInfo.availablePorts():
-            self.port_combo.addItem(port.portName())
+            # Only add physical ports (USB or COM)
+            if (port.hasProductIdentifier() or 
+                port.hasVendorIdentifier() or 
+                (port.portName().startswith("COM") and port.portName() != "COM1")):
+                self.port_combo.addItem(port.portName())
 
     def toggle_connection(self):
-        if not self.serial_port.isOpen():
+        if not self.serial_port.isOpen():  # Connect
             if self.auto_connect_cb.isChecked():
                 # Start auto-connect process
+                self.connect_btn.setText("Searching...")
+                self.port_combo.setEnabled(False)
+                self.refresh_btn.setEnabled(False)
                 self.start_auto_connect()
             else:
                 # Normal connection process
@@ -184,13 +192,17 @@ class EncoderControl(QWidget):
                     self.serial_port.setPortName(self.port_combo.currentText())
                     self.serial_port.setBaudRate(QSerialPort.Baud115200)
                     if self.serial_port.open(QSerialPort.ReadWrite):
+                        self.connect_btn.setText("Disconnect")
+                        self.port_combo.setEnabled(False)
+                        self.refresh_btn.setEnabled(False)
+                        self.log_message.emit(f"Connected to {self.port_combo.currentText()} at 115200 baud")
                         # Check if it's an encoder
                         self.send_command("IsXEncoder")
                     else:
                         self.log_message.emit(f"Failed to open port {self.port_combo.currentText()}")
                 except Exception as e:
                     self.log_message.emit(f"Error: {str(e)}")
-        else:
+        else:  # Disconnect
             self.stop_auto_connect()  # Stop any auto-connect process
             self.position_update_timer.stop()
             self.serial_port.close()
@@ -200,9 +212,12 @@ class EncoderControl(QWidget):
             self.log_message.emit("Disconnected")
 
     def toggle_auto_connect(self, state):
+        """Only update checkbox state, actual auto-connect starts when clicking connect"""
         if not state and self.serial_port.isOpen():
-            # If turning off auto-connect while connected, disconnect
-            self.toggle_connection()
+            # If turning off auto-connect while connected, stay connected
+            self.connect_btn.setText("Disconnect")
+            self.port_combo.setEnabled(False)
+            self.refresh_btn.setEnabled(False)
 
     def try_auto_connect(self):
         """Periodic check for auto-connect status"""
@@ -211,8 +226,13 @@ class EncoderControl(QWidget):
 
     def start_auto_connect(self):
         """Start the auto-connect process"""
-        self.ports_to_test = [port.portName() for port in QSerialPortInfo.availablePorts()]
+        self.ports_to_test = [port.portName() for port in QSerialPortInfo.availablePorts() 
+                             if (port.hasProductIdentifier() or 
+                                 port.hasVendorIdentifier() or 
+                                 (port.portName().startswith("COM") and port.portName() != "COM1"))]
         if self.ports_to_test:
+            # Start the auto-connect timer
+            self.auto_connect_timer.start(2000)  # Check every 2 seconds
             self.try_next_port()
         else:
             self.log_message.emit("No COM ports available")
@@ -222,23 +242,18 @@ class EncoderControl(QWidget):
         """Try connecting to the next available port"""
         if self.ports_to_test:
             self.current_test_port = self.ports_to_test.pop(0)
-            self.try_connect_to_port(self.current_test_port)
-            # Start response timeout timer
-            self.port_response_timer.start(500)  # 500ms timeout
+            if self.try_connect_to_port(self.current_test_port):
+                # Send IsXEncoder command to check if this is an encoder
+                self.send_command("IsXEncoder")
+                # Start response timeout timer
+                self.port_response_timer.start(1000)  # 1 second timeout
+            else:
+                # If connection failed, try next port immediately
+                self.try_next_port()
         else:
-            self.port_response_timer.stop()
-            self.auto_connect_cb.setChecked(False)
-            self.connect_btn.setText("Connect")
-            self.port_combo.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
+            # No more ports to test
+            self.stop_auto_connect()
             self.log_message.emit("Auto-connect: No X Encoder found")
-
-    def port_timeout(self):
-        """Called when no response is received from current port within timeout period"""
-        if self.serial_port.isOpen():
-            self.serial_port.close()
-        self.log_message.emit(f"No response from {self.current_test_port}")
-        self.try_next_port()  # Try next port immediately
 
     def try_connect_to_port(self, port_name):
         """Attempt to connect to a specific port"""
@@ -250,30 +265,47 @@ class EncoderControl(QWidget):
         
         if self.serial_port.open(QSerialPort.ReadWrite):
             self.log_message.emit(f"Testing port {port_name}...")
-            self.send_command("IsXEncoder")
+            return True
         else:
             self.log_message.emit(f"Failed to open port {port_name}")
-            self.try_next_port()  # Try next port if can't open current one
+            return False
 
-    def stop_auto_connect(self):
-        """Stop all auto-connect related timers and close port"""
-        self.auto_connect_timer.stop()
-        self.port_response_timer.stop()
+    def port_timeout(self):
+        """Called when no response is received from current port within timeout period"""
         if self.serial_port.isOpen():
             self.serial_port.close()
+        self.log_message.emit(f"No response from {self.current_test_port}")
+        self.try_next_port()  # Try next port immediately
+
+    def stop_auto_connect(self):
+        """Stop all auto-connect related timers"""
+        self.auto_connect_timer.stop()
+        self.port_response_timer.stop()
+        if not self.serial_port.isOpen():
+            self.auto_connect_cb.setChecked(False)
+            self.connect_btn.setText("Connect")
+            self.port_combo.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
         self.log_message.emit("Auto-connect stopped")
 
     def read_data(self):
+        """Read data from serial port"""
         while self.serial_port.canReadLine():
             data = self.serial_port.readLine().data().decode().strip()
             self.log_message.emit(f"Received: {data}")
             self.response_received.emit(data, self)  # Emit response with self as device
             
+            # Handle special responses
             if data == "YesXEncoder":
+                self.log_message.emit("X Encoder detected!")
+                # Stop auto-connect process since we found the encoder
+                self.port_response_timer.stop()
+                self.auto_connect_timer.stop()
+                # Update UI to show current port
+                self.port_combo.setCurrentText(self.serial_port.portName())
                 self.connect_btn.setText("Disconnect")
                 self.port_combo.setEnabled(False)
                 self.refresh_btn.setEnabled(False)
-                self.log_message.emit(f"X Encoder found on {self.port_combo.currentText()}")
             elif data.startswith("P:"):
                 # Update position display
                 try:

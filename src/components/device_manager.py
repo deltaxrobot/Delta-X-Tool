@@ -14,6 +14,7 @@ from plugins.script_plugin import ScriptPlugin
 from .robot_control import RobotControl
 from .conveyor_control import ConveyorControl
 from .encoder_control import EncoderControl
+from .mcu_control import MCUControl
 
 class DeviceManager(QWidget):
     log_message = pyqtSignal(str)
@@ -60,6 +61,7 @@ class DeviceManager(QWidget):
         # Log display area
         log_widget = QWidget()
         log_layout = QVBoxLayout(log_widget)
+        log_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         
         log_label = QLabel("Communication Log")
         log_layout.addWidget(log_label)
@@ -69,7 +71,11 @@ class DeviceManager(QWidget):
         self.log_display.setMaximumHeight(150)
         log_layout.addWidget(self.log_display)
         
+        log_widget.setMaximumHeight(200)  # Set maximum height for log section
         right_panel.addWidget(log_widget)
+        
+        # Set splitter sizes (80% device area, 20% log)
+        right_panel.setSizes([800, 200])
         
         # Add right panel to main layout
         layout.addWidget(right_panel)
@@ -77,6 +83,9 @@ class DeviceManager(QWidget):
         # Set stretch factors
         layout.setStretch(0, 0)  # Device list - fixed width
         layout.setStretch(1, 1)  # Right panel - stretches to fill space
+        
+        # Remove margins to maximize space
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Connect log signal
         self.log_message.connect(self.log_display.append)
@@ -110,12 +119,12 @@ class DeviceManager(QWidget):
         
     def show_add_menu(self):
         menu = QMenu(self)
-        robot_action = menu.addAction("Robot")
-        conveyor_action = menu.addAction("Conveyor")
-        encoder_action = menu.addAction("Encoder")
+        robot_action = menu.addAction("Add Robot")
+        conveyor_action = menu.addAction("Add Conveyor")
+        encoder_action = menu.addAction("Add Encoder")
+        mcu_action = menu.addAction("Add MCU")
         
-        # Show menu at button position
-        action = menu.exec_(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
+        action = menu.exec_(self.mapToGlobal(self.sender().pos()))
         
         if action == robot_action:
             self.add_device('robot')
@@ -123,6 +132,8 @@ class DeviceManager(QWidget):
             self.add_device('conveyor')
         elif action == encoder_action:
             self.add_device('encoder')
+        elif action == mcu_action:
+            self.add_device('mcu')
 
     def add_device(self, device_type):
         # Create device
@@ -132,9 +143,12 @@ class DeviceManager(QWidget):
         elif device_type == 'conveyor':
             device = ConveyorControl()
             name = f"Conveyor {sum(1 for d in self.devices if isinstance(d, ConveyorControl)) + 1}"
-        else:  # encoder
+        elif device_type == 'encoder':
             device = EncoderControl()
             name = f"Encoder {sum(1 for d in self.devices if isinstance(d, EncoderControl)) + 1}"
+        else:  # mcu
+            device = MCUControl()
+            name = f"MCU {sum(1 for d in self.devices if isinstance(d, MCUControl)) + 1}"
         
         # Connect device signals
         device.log_message.connect(self.log_message.emit)

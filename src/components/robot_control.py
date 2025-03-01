@@ -33,15 +33,21 @@ class RobotControl(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         
-        # Connection group at top
+        # Top section with Connection and System Commands side by side
+        top_layout = QHBoxLayout()
+        
+        # Connection group
         connection_group = QGroupBox("Connection")
         connection_layout = QHBoxLayout()
+        connection_layout.setSpacing(10)  # Add spacing between elements
         
         # Port selection
+        port_layout = QHBoxLayout()
         self.port_combo = QComboBox()
         self.port_combo.setMinimumWidth(150)
-        connection_layout.addWidget(QLabel("Port:"))
-        connection_layout.addWidget(self.port_combo)
+        port_layout.addWidget(QLabel("Port:"))
+        port_layout.addWidget(self.port_combo)
+        connection_layout.addLayout(port_layout)
         
         # Auto-connect checkbox
         self.auto_connect_cb = QCheckBox("Auto Connect")
@@ -60,7 +66,29 @@ class RobotControl(QWidget):
         
         connection_layout.addStretch()
         connection_group.setLayout(connection_layout)
-        layout.addWidget(connection_group)
+        connection_group.setMaximumHeight(100)  # Limit height of connection group
+        top_layout.addWidget(connection_group)
+
+        # System commands group
+        sys_group = QGroupBox("System Commands")
+        sys_layout = QHBoxLayout()
+        sys_layout.setSpacing(10)  # Add spacing between elements
+
+        reset_btn = QPushButton("Reset (M999)")
+        reset_btn.clicked.connect(lambda: self.send_gcode("M999"))
+        sys_layout.addWidget(reset_btn)
+
+        stop_btn = QPushButton("Emergency Stop (M112)")
+        stop_btn.clicked.connect(lambda: self.send_gcode("M112"))
+        stop_btn.setStyleSheet("background-color: #e74c3c; color: white;")
+        sys_layout.addWidget(stop_btn)
+
+        sys_group.setLayout(sys_layout)
+        sys_group.setMaximumHeight(100)  # Match height with connection group
+        top_layout.addWidget(sys_group)
+        
+        # Add top section to main layout
+        layout.addLayout(top_layout)
 
         # Create tab widget for robot controls
         tab_widget = QTabWidget()
@@ -182,22 +210,6 @@ class RobotControl(QWidget):
 
         pos_group.setLayout(pos_grid)
         left_column.addWidget(pos_group)
-        
-        # System commands at bottom of left column
-        sys_group = QGroupBox("System Commands")
-        sys_layout = QHBoxLayout()
-
-        reset_btn = QPushButton("Reset (M999)")
-        reset_btn.clicked.connect(lambda: self.send_gcode("M999"))
-        sys_layout.addWidget(reset_btn)
-
-        stop_btn = QPushButton("Emergency Stop (M112)")
-        stop_btn.clicked.connect(lambda: self.send_gcode("M112"))
-        stop_btn.setStyleSheet("background-color: #e74c3c; color: white;")
-        sys_layout.addWidget(stop_btn)
-
-        sys_group.setLayout(sys_layout)
-        left_column.addWidget(sys_group)
         
         # Add left column to main layout
         pos_layout.addLayout(left_column)
@@ -328,14 +340,22 @@ class RobotControl(QWidget):
         layout.addWidget(tab_widget)
 
     def update_ports(self):
+        """Update available COM ports, filtering out non-physical ports"""
         self.port_combo.clear()
         for port in QSerialPortInfo.availablePorts():
-            self.port_combo.addItem(port.portName())
+            # Only add physical ports (USB or COM)
+            if (port.hasProductIdentifier() or 
+                port.hasVendorIdentifier() or 
+                (port.portName().startswith("COM") and port.portName() != "COM1")):
+                self.port_combo.addItem(port.portName())
 
     def toggle_connection(self):
         if not self.serial_port.isOpen():  # Connect
             if self.auto_connect_cb.isChecked():
                 # Start auto-connect process
+                self.connect_btn.setText("Searching...")
+                self.port_combo.setEnabled(False)
+                self.refresh_btn.setEnabled(False)
                 self.start_auto_connect()
             else:
                 # Normal connection process
@@ -390,7 +410,8 @@ class RobotControl(QWidget):
                 # Stop auto-connect process since we found the robot
                 self.port_response_timer.stop()
                 self.auto_connect_timer.stop()
-                # Update UI
+                # Update UI to show current port
+                self.port_combo.setCurrentText(self.serial_port.portName())
                 self.connect_btn.setText("Disconnect")
                 self.port_combo.setEnabled(False)
                 self.refresh_btn.setEnabled(False)
@@ -476,21 +497,12 @@ class RobotControl(QWidget):
             self.command_input.clear()
 
     def toggle_auto_connect(self, state):
-        if state:
-            # Start auto-connect if not already connected
-            if not self.serial_port.isOpen():
-                self.start_auto_connect()
-                self.connect_btn.setText("Searching...")
-                self.port_combo.setEnabled(False)
-                self.refresh_btn.setEnabled(False)
-        else:
-            # Stop auto-connect process
-            self.stop_auto_connect()
-            # If connected, stay connected
-            if self.serial_port.isOpen():
-                self.connect_btn.setText("Disconnect")
-                self.port_combo.setEnabled(False)
-                self.refresh_btn.setEnabled(False)
+        """Only update checkbox state, actual auto-connect starts when clicking connect"""
+        if not state and self.serial_port.isOpen():
+            # If turning off auto-connect while connected, stay connected
+            self.connect_btn.setText("Disconnect")
+            self.port_combo.setEnabled(False)
+            self.refresh_btn.setEnabled(False)
 
     def try_auto_connect(self):
         """Periodic check for auto-connect status"""

@@ -17,8 +17,9 @@ class DeltaXTool(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DeltaX Tool")
-        self.setMinimumSize(1024, 768)  # Larger size for touch screens
-        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(1024, 768)  # Minimum size
+        # Set window to maximize on startup
+        self.showMaximized()
         
         # Setup UI
         self.init_ui()
@@ -34,6 +35,7 @@ class DeltaXTool(QMainWindow):
                 border-radius: 5px;
                 margin-top: 1ex;
                 padding: 10px;
+                min-height: fit-content;  /* Allow group box to expand based on content */
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -44,9 +46,11 @@ class DeltaXTool(QMainWindow):
                 background-color: #3498db;
                 color: white;
                 border: none;
-                padding: 15px;  /* Larger padding for touch */
+                padding: 8px 15px;  /* Adjusted padding */
                 border-radius: 5px;
-                font-size: 14px;  /* Larger font for touch */
+                font-size: 14px;
+                min-height: 30px;  /* Reduced minimum height */
+                min-width: 80px;  /* Minimum width for buttons */
             }
             QPushButton:hover {
                 background-color: #2980b9;
@@ -55,19 +59,22 @@ class DeltaXTool(QMainWindow):
                 background-color: #bdc3c7;
             }
             QComboBox, QSpinBox, QDoubleSpinBox {
-                padding: 10px;  /* Larger padding for touch */
+                padding: 5px 10px;  /* Adjusted padding */
                 border: 1px solid #bdc3c7;
                 border-radius: 5px;
-                font-size: 14px;  /* Larger font for touch */
+                font-size: 14px;
+                min-height: 30px;  /* Reduced minimum height */
             }
             QTextEdit, QLineEdit {
                 border: 1px solid #bdc3c7;
                 border-radius: 5px;
-                font-size: 14px;  /* Larger font for touch */
+                font-size: 14px;
                 padding: 5px;
+                min-height: 30px;  /* Reduced minimum height */
             }
             QLabel {
-                font-size: 14px;  /* Larger font for touch */
+                font-size: 14px;
+                min-height: 25px;  /* Reduced minimum height */
             }
             QTabWidget::pane {
                 border: 2px solid #3498db;
@@ -76,12 +83,28 @@ class DeltaXTool(QMainWindow):
             QTabBar::tab {
                 background-color: #f0f0f0;
                 border: 1px solid #bdc3c7;
-                padding: 15px;  /* Larger padding for touch */
-                font-size: 14px;  /* Larger font for touch */
+                padding: 8px 15px;  /* Adjusted padding */
+                font-size: 14px;
+                min-height: 30px;  /* Reduced minimum height */
+                min-width: 100px;
             }
             QTabBar::tab:selected {
                 background-color: #3498db;
                 color: white;
+            }
+            QGridLayout {
+                spacing: 8px;  /* Reduced spacing */
+            }
+            QVBoxLayout, QHBoxLayout {
+                spacing: 8px;  /* Reduced spacing */
+            }
+            QSplitter::handle {
+                background-color: #bdc3c7;
+                height: 2px;
+            }
+            QStackedWidget {
+                padding: 0px;
+                margin: 0px;
             }
         """)
 
