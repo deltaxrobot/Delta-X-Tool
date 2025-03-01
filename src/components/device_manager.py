@@ -10,6 +10,7 @@ import os
 # Add parent directory to Python path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from plugins.script_plugin import ScriptPlugin
+from plugins.drawing_plugin import DrawingPlugin
 
 from .robot_control import RobotControl
 from .conveyor_control import ConveyorControl
@@ -92,9 +93,13 @@ class DeviceManager(QWidget):
 
     def load_plugins(self):
         """Load all available plugins"""
-        # For now, we'll just load the Script plugin
+        # Load Script plugin
         script_plugin = ScriptPlugin(self)
         self.add_plugin(script_plugin)
+        
+        # Load Drawing plugin
+        drawing_plugin = DrawingPlugin(self)
+        self.add_plugin(drawing_plugin)
         
         # Connect plugin signals
         for plugin in self.plugins.values():

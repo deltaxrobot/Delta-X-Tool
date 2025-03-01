@@ -113,22 +113,28 @@ class DeltaXTool(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QHBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Create main horizontal splitter
-        main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Horizontal)
         
         # Left and Center - Device Manager
         self.device_manager = DeviceManager()
-        main_splitter.addWidget(self.device_manager)
+        self.main_splitter.addWidget(self.device_manager)
         
         # Right side - Plugin Tabs
         self.plugin_tabs = QTabWidget()
-        main_splitter.addWidget(self.plugin_tabs)
+        self.main_splitter.addWidget(self.plugin_tabs)
         
-        # Set initial splitter sizes (80% left+center, 20% right)
-        main_splitter.setSizes([800, 200])
+        # Set initial splitter sizes (70% left, 30% right)
+        total_width = 1000  # Reference width
+        self.main_splitter.setSizes([700, 300])
         
-        layout.addWidget(main_splitter)
+        # Enable interactive resizing
+        self.main_splitter.setHandleWidth(5)  # Make the handle easier to grab
+        self.main_splitter.setChildrenCollapsible(False)  # Prevent panels from being collapsed
+        
+        layout.addWidget(self.main_splitter)
         
         # Add plugins to the right panel
         self.setup_plugins()
