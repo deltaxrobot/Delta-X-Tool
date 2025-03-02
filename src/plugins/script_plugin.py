@@ -15,6 +15,7 @@ from datetime import datetime
 import math
 import traceback
 import sys
+from .coroutine import yield_
 
 # Add parent directory to Python path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -514,6 +515,7 @@ class ScriptPlugin(BasePlugin):
         self.stop_requested = False
         self.script_timeout = None
         self.lua_thread = None
+        self.last_command = None
         
         # Initialize UI and setup environment
         self.init_ui()
@@ -835,25 +837,104 @@ print("Script started...")
                 self.output_console.append(message)
             lua_globals.print = lua_print
             
-            # Basic device functions with error handling
-            def get_device(name):
+            # Add command queue function
+            def queue_command(command):
+                if not self.script_running:
+                    lua_print("Error: Script not running")
+                    return False
+                    
                 try:
-                    if not isinstance(name, str):
-                        raise TypeError("Device name must be a string")
+                    if not self.check_queue_size():
+                        return False
                         
-                    for i in range(self.device_manager.device_list.count()):
-                        item = self.device_manager.device_list.item(i)
-                        if item.text() == name:
-                            device = item.device
-                            if device is None:
-                                raise Exception(f"Device {name} is not connected")
-                            return device
-                    raise Exception(f"Device {name} not found")
+                    # Lưu coroutine hiện tại để có thể tiếp tục sau này
+                    current_coroutine = self.lua_thread
+                    
+                    # Thêm lệnh vào queue
+                    with self.queue_lock:
+                        self.command_queue.append(command)
+                        
+                    # Đảm bảo chúng ta không đang đợi phản hồi
+                    if not self.waiting_response:
+                        # Kích hoạt xử lý queue ngay lập tức
+                        self.process_queue()
+                    
+                    # Sau khi gửi lệnh, tạm dừng coroutine để chờ phản hồi
+                    # Sử dụng module yield_ từ thư viện coroutine đã import
+                    return yield_()
                 except Exception as e:
-                    lua_print(f"Error getting device: {str(e)}")
-                    return None
-            lua_globals.get_device = get_device
-            
+                    lua_print(f"Error queueing command: {str(e)}")
+                    return False
+            lua_globals.queue_command = queue_command
+
+            # Add robot control methods to Python globals first
+            def robot_move_to(robot, x, y, z):
+                if not isinstance(robot, RobotControl):
+                    lua_print("Error: Invalid robot device")
+                    return False
+                lua_print(f"Sending move command to robot: G1 X{x} Y{y} Z{z}")
+                return queue_command(f"G1 X{x} Y{y} Z{z}")
+            lua_globals.robot_move_to = robot_move_to
+
+            def robot_set_speed(robot, speed):
+                if not isinstance(robot, RobotControl):
+                    lua_print("Error: Invalid robot device")
+                    return False
+                lua_print(f"Setting robot speed: G0 F{speed}")
+                return queue_command(f"G0 F{speed}")
+            lua_globals.robot_set_speed = robot_set_speed
+
+            def robot_home(robot):
+                if not isinstance(robot, RobotControl):
+                    lua_print("Error: Invalid robot device")
+                    return False
+                lua_print("Homing robot: G28")
+                return queue_command("G28")
+            lua_globals.robot_home = robot_home
+
+            # Now set up the robot methods in Lua
+            self.lua.execute("""
+                -- Robot methods
+                function robot_methods(robot)
+                    return {
+                        move_to = function(self, x, y, z)
+                            print("Robot executing move command...")
+                            return robot_move_to(self._robot, x, y, z)
+                        end,
+                        set_speed = function(self, speed)
+                            print("Robot executing speed command...")
+                            return robot_set_speed(self._robot, speed)
+                        end,
+                        home = function(self)
+                            print("Robot executing home command...")
+                            return robot_home(self._robot)
+                        end
+                    }
+                end
+
+                -- Set up metatable for robot
+                robot_mt = {
+                    __index = function(t, k)
+                        local methods = robot_methods(t)
+                        return methods[k]
+                    end
+                }
+
+                -- Function to set up robot object
+                function setup_robot(robot)
+                    return setmetatable({_robot = robot}, robot_mt)
+                end
+            """)
+
+            # Modify get_device to use robot setup
+            old_get_device = lua_globals.get_device
+            def new_get_device(name):
+                device = old_get_device(name)
+                if device and isinstance(device, RobotControl):
+                    return self.lua.eval('setup_robot')(device)
+                return device
+            lua_globals.get_device = new_get_device
+
             # Conveyor specific functions with error handling
             def conveyor_move(conveyor, direction, speed):
                 try:
@@ -1007,6 +1088,26 @@ print("Script started...")
                 return self.stop_requested
             lua_globals.check_stop = check_stop
             
+            # Basic device functions with error handling
+            def get_device(name):
+                try:
+                    if not isinstance(name, str):
+                        raise TypeError("Device name must be a string")
+                        
+                    for i in range(self.device_manager.device_list.count()):
+                        item = self.device_manager.device_list.item(i)
+                        if item.text() == name:
+                            device = item.device
+                            if device is None:
+                                raise Exception(f"Device {name} is not connected")
+                            self.current_device = device  # Set current device
+                            return device
+                    raise Exception(f"Device {name} not found")
+                except Exception as e:
+                    lua_print(f"Error getting device: {str(e)}")
+                    return None
+            lua_globals.get_device = get_device
+
         except Exception as e:
             self.log_message.emit(f"Error setting up Lua environment: {str(e)}")
             self.output_console.append(traceback.format_exc())
@@ -1017,6 +1118,9 @@ print("Script started...")
             # Reset state
             self.script_running = True
             self.stop_requested = False
+            self.waiting_response = False
+            with self.queue_lock:
+                self.command_queue.clear()
             self.run_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.output_console.clear()
@@ -1030,7 +1134,7 @@ print("Script started...")
             # Get script content
             script = self.script_editor.toPlainText()
             
-            # Create Lua function to handle script execution
+            # Tạo một cơ chế coroutine mới rõ ràng hơn
             self.lua.execute("""
                 function create_and_run_script(script_text)
                     -- Load the script
@@ -1042,22 +1146,23 @@ print("Script started...")
                     -- Create coroutine
                     local co = coroutine.create(fn)
                     
-                    -- Return both the coroutine and its initial run result
+                    -- Initial run
                     local success, result = coroutine.resume(co)
-                    return co, success, result
+                    if not success then
+                        error("Script error: " .. tostring(result))
+                    end
+                    
+                    -- Return coroutine for future resuming
+                    return co
                 end
             """)
             
             # Run the script
             create_and_run = self.lua.globals().create_and_run_script
-            self.lua_thread, success, result = create_and_run(script)
+            self.lua_thread = create_and_run(script)
             
-            if not success:
-                raise Exception(str(result))
-                
         except Exception as e:
             self.log_message.emit(f"Script error: {str(e)}")
-            self.output_console.append(f"Error: {str(e)}")
             self.output_console.append(traceback.format_exc())
             self.stop_script()
 
@@ -1110,53 +1215,97 @@ print("Script started...")
         try:
             if self.stop_requested:
                 return
-                
+            
             with self.queue_lock:
-                if not self.waiting_response and self.command_queue:
-                    # Send next command
+                # Chỉ gửi lệnh tiếp theo khi:
+                # 1. Không đang đợi phản hồi từ lệnh trước (waiting_response = False)
+                # 2. Có lệnh trong queue
+                # 3. Script đang chạy
+                if not self.waiting_response and self.command_queue and self.script_running:
+                    # Lấy lệnh tiếp theo
                     command = self.command_queue.pop(0)
+                    
+                    # Đánh dấu đang đợi phản hồi và gửi lệnh
                     self.waiting_response = True
+                    self.last_command = command
                     self.send_command(command, self.current_device)
                     self.output_console.append(f"Sent: {command}")
+                    
+                    # Set timeout để tránh treo script
+                    QTimer.singleShot(5000, self.check_command_timeout)
                     
         except Exception as e:
             self.log_message.emit(f"Error processing queue: {str(e)}")
             self.output_console.append(traceback.format_exc())
             self.stop_script()
 
+    def check_command_timeout(self):
+        """Check if the current command has timed out"""
+        if self.waiting_response:
+            self.log_message.emit(f"Command timeout: {self.last_command}")
+            self.waiting_response = False
+            
+            # Nếu script vẫn đang chạy, tiếp tục thực thi
+            if self.script_running and hasattr(self, 'lua_thread'):
+                self.resume_script()
+
     def handle_response(self, response, device):
         """Handle device response"""
         try:
-            if device == self.current_device:
+            if device == self.current_device and self.waiting_response:
                 self.output_console.append(f"Received: {response}")
-                self.waiting_response = False
                 
-                # Check if script should continue
-                if self.stop_requested:
-                    return
+                # Khi nhận được "Ok", tiếp tục thực thi script
+                if response.lower() == "ok":
+                    self.waiting_response = False
                     
-                # Resume script execution
-                if hasattr(self, 'lua_thread'):
-                    # Create Lua function to safely resume script
-                    self.lua.execute("""
-                        function safe_resume_script(co)
-                            if not co then return false, "No coroutine" end
-                            
-                            local status = coroutine.status(co)
-                            if status == "suspended" then
-                                return coroutine.resume(co)
+                    # Nếu script vẫn đang chạy, tiếp tục thực thi
+                    if self.script_running and hasattr(self, 'lua_thread'):
+                        self.resume_script()
+            
+        except Exception as e:
+            self.log_message.emit(f"Error handling response: {str(e)}")
+            self.output_console.append(traceback.format_exc())
+            self.stop_script()
+
+    def resume_script(self):
+        """Resume script execution"""
+        try:
+            # Check if script should continue
+            if self.stop_requested or not self.script_running:
+                return
+                
+            # Resume script execution
+            if hasattr(self, 'lua_thread'):
+                # Create Lua function to safely resume script
+                self.lua.execute("""
+                    function safe_resume_script(co)
+                        if not co then return false, "No coroutine" end
+                        
+                        local status = coroutine.status(co)
+                        if status == "suspended" then
+                            local success, result = coroutine.resume(co)
+                            if not success then
+                                error("Script error: " .. tostring(result))
                             end
-                            return false, "Coroutine is " .. status
+                            return success, result
+                        elseif status == "dead" then
+                            return true, "Script completed"
                         end
-                    """)
+                        return false, "Coroutine is " .. status
+                    end
+                """)
+                
+                # Resume the script
+                safe_resume = self.lua.globals().safe_resume_script
+                success, result = safe_resume(self.lua_thread)
+                
+                if success and result == "Script completed":
+                    self.log_message.emit("Script execution completed")
+                    self.stop_script()
+                elif not success:
+                    raise Exception(str(result))
                     
-                    # Resume the script
-                    safe_resume = self.lua.globals().safe_resume_script
-                    success, result = safe_resume(self.lua_thread)
-                    
-                    if not success:
-                        raise Exception(str(result))
-                            
         except Exception as e:
             self.log_message.emit(f"Script error: {str(e)}")
             self.output_console.append(traceback.format_exc())

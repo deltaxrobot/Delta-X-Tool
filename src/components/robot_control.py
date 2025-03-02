@@ -418,7 +418,7 @@ class RobotControl(QWidget):
                 self.connection_status_changed.emit(True)
                 # Get current position
                 self.send_gcode("G93")
-            elif data == "ok" and self.last_command == "G28":
+            elif data == "Ok" and self.last_command == "G28":
                 # After homing, request current position
                 self.send_gcode("G93")
             
@@ -612,7 +612,6 @@ class RobotControl(QWidget):
         
     def move_to(self, x, y, z):
         """Move robot to absolute position"""
-        self.set_absolute_mode()
         return self.send_gcode(f"G1 X{x} Y{y} Z{z}")
         
     def set_speed(self, speed):
